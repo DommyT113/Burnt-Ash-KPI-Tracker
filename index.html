@@ -263,7 +263,30 @@
             }
             showToast(`Generating ${sn} files...`);
 
-            // Prepare for capture
+            // 1. Build and download the JSON FIRST. This is the critical data file and must not
+            // depend on the PNG snapshot succeeding — html2canvas can fail or hang on some mobile
+            // browsers (e.g. with backdrop-filter/blur effects), and previously that silently
+            // skipped the JSON download too and left the UI stuck mid-capture.
+            let jsonSaved = false;
+            try {
+                const sb={};
+                kpiSettings.forEach(k=>{
+                    const evs=allEvents.filter(e=>e.metric===k.key),sc=evs.filter(e=>e.type==='success').length;
+                    sb[k.key]={successCount:sc,totalCount:evs.length,percentage:`${(evs.length>0?sc/evs.length*100:0).toFixed(1)}%`}
+                });
+                const ds={gameDetails:{club:"Burnt Ash HC",team,gameLength,opponent:opponentName,filename:fb,savedAt:new Date().toISOString()},summary:sb,events:allEvents,kpiSettings};
+                const dataStr="data:text/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(ds,null,2));
+                const jl=document.createElement('a');
+                jl.href=dataStr;
+                jl.download=`${fb}.json`;
+                jl.click();
+                jsonSaved = true;
+            } catch(err) {
+                console.error('JSON download failed', err);
+                alert('⚠️ Could not save the match data file (JSON). Please try again.\n\n' + (err && err.message ? err.message : err));
+            }
+
+            // 2. Best-effort PNG snapshot. Never allowed to block or hide the UI permanently.
             document.body.classList.add('is-capturing');
             const placeholder = document.getElementById('capture-header-placeholder');
             const originalKpiHTML = ui.kpiContainer.innerHTML;
@@ -327,40 +350,47 @@
                 return `<div id="${k.key}Row" class="kpi-row p-2 rounded-lg"><div>${nameHTML}${resultHTML}</div></div>`;
             }).join('');
             
+            const finishUp = (pngSaved) => {
+                document.body.classList.remove('is-capturing');
+                placeholder.classList.add('hidden');
+                placeholder.innerHTML = '';
+                ui.kpiContainer.innerHTML = originalKpiHTML;
+                updateAllDisplays();
+
+                const label = (s==='fulltime'||s==='early') ? 'Final' : 'Halftime';
+                if (!jsonSaved) {
+                    showToast(`⚠️ ${label} data may not have saved — please try again.`, 4000);
+                } else if (!pngSaved) {
+                    showToast(`${label} data saved (image snapshot failed).`, 3500);
+                } else {
+                    showToast(`${label} files saved!`, 3000);
+                }
+
+                if(s==='fulltime'||s==='early'){
+                    softInit();clearSavedState();ui.mainTracker.classList.add('hidden');ui.startScreen.classList.remove('hidden');checkForRecovery();
+                }
+            };
+
             setTimeout(() => {
-                html2canvas(document.getElementById('stats-capture-area'),{useCORS:true,backgroundColor:"#0A192F"}).then(c=>{
-                    document.body.classList.remove('is-capturing');
-                    placeholder.classList.add('hidden');
-                    placeholder.innerHTML = '';
-                    ui.kpiContainer.innerHTML = originalKpiHTML;
-                    updateAllDisplays();
-
-                    const il=document.createElement('a');
-                    il.href=c.toDataURL("image/png");
-                    il.download=`${fb}.png`;
-                    il.click();
-
-                    const sb={};
-                    kpiSettings.forEach(k=>{
-                        const evs=allEvents.filter(e=>e.metric===k.key),sc=evs.filter(e=>e.type==='success').length;
-                        sb[k.key]={successCount:sc,totalCount:evs.length,percentage:`${(evs.length>0?sc/evs.length*100:0).toFixed(1)}%`}
+                try {
+                    html2canvas(document.getElementById('stats-capture-area'),{useCORS:true,backgroundColor:"#0A192F"}).then(c=>{
+                        let pngSaved = false;
+                        try {
+                            const il=document.createElement('a');
+                            il.href=c.toDataURL("image/png");
+                            il.download=`${fb}.png`;
+                            il.click();
+                            pngSaved = true;
+                        } catch(err) { console.error('PNG download failed', err); }
+                        finishUp(pngSaved);
+                    }).catch(err => {
+                        console.error('html2canvas rejected', err);
+                        finishUp(false);
                     });
-                    const ds={gameDetails:{club:"Burnt Ash HC",team,gameLength,opponent:opponentName,filename:fb,savedAt:new Date().toISOString()},summary:sb,events:allEvents,kpiSettings};
-                    const dataStr="data:text/json;charset=utf-8,"+encodeURIComponent(JSON.stringify(ds,null,2));
-                    
-                    setTimeout(()=>{
-                        const jl=document.createElement('a');
-                        jl.href=dataStr;
-                        jl.download=`${fb}.json`;
-                        jl.click();
-                        if(s==='fulltime'||s==='early'){
-                            showToast("Final downloads initiated!",3000);
-                            softInit();clearSavedState();ui.mainTracker.classList.add('hidden');ui.startScreen.classList.remove('hidden');checkForRecovery();
-                        } else {
-                            showToast("Halftime downloads initiated!",3000)
-                        }
-                    },200)
-                });
+                } catch(err) {
+                    console.error('html2canvas threw synchronously', err);
+                    finishUp(false);
+                }
             }, 100);
         }
 
